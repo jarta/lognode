@@ -1,0 +1,8 @@
+/* body {background-color: lightblue}
+p {display:inline;}
+em {display:block;}
+*/
+body.warning {background-color: red}
+*.alert {background-color: yellow}
+.alert {font-weight: bold;}
+.alert {font-style: italic;}
