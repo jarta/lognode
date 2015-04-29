@@ -92,6 +92,7 @@ public class LogFileStat {
      * @param lines
      */
     private void updatePosition(List<String> lines) {
+        //java.io.LineNumberReader
         long bufSize = 0l;
         for(String line: lines) {
             bufSize += line.length() + IOUtils.LINE_SEPARATOR.length();
