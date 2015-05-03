@@ -1,31 +1,32 @@
 package com.jarta.file;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.InputStream;
-import java.nio.file.Path;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Created by wei on 2015/4/5.
  */
-public class LogFileStat {
+public class FileContentWatcher {
 
-    private Logger logger = LoggerFactory.getLogger(LogFileStat.class);
+    private Logger logger = LoggerFactory.getLogger(FileContentWatcher.class);
 
     private File logFile;
     private long position;
 
+    //TODO: to be removed by spring injection
+    private CommonUpdateListener listener = new FileChangeHandler();
+
     private AtomicBoolean needFlash = new AtomicBoolean(false);
 
-    public LogFileStat(File f, long position) {
+    public FileContentWatcher(File f, long position) {
         logFile = f;
         this.position = position;
     }
@@ -43,11 +44,19 @@ public class LogFileStat {
      * @return if any dirty line needs to be processed later.
      */
     public void modify(boolean forceRefresh) {
-        InputStream is = null;
+        RandomAccessFile raReader = null;
         try {
-            is = FileUtils.openInputStream(logFile);
-            IOUtils.skip(is, position);
-            List<String> lines = IOUtils.readLines(is);
+            raReader = new RandomAccessFile(logFile, "r");
+            if(position > 0) {
+                raReader.seek(position);
+            }
+
+            List<String> lines = new ArrayList<String>();
+            String line = raReader.readLine();
+            while(line != null) {
+                lines.add(line);
+                line = raReader.readLine();
+            }
 
             //ignore the last line for un-finished consideration
             if(!forceRefresh && lines.size() > 0) {
@@ -60,12 +69,16 @@ public class LogFileStat {
                 needFlash.set(false);
             }
 
-            updatePosition(lines);
+            updatePosition(lines, raReader.getFilePointer());
             processRecords(lines);
         } catch (Exception e) {
             logger.error("fail to continue ..", e);
         } finally {
-            IOUtils.closeQuietly(is);
+            try {
+                raReader.close();
+            } catch (IOException e) {
+               logger.error("fail to close the file - " + logFile , e);
+            }
         }
     }
 
@@ -83,7 +96,7 @@ public class LogFileStat {
      */
     void processRecords(List<String> lines) {
         for(String line: lines) {
-            logger.info("todo - {}", line );
+            listener.handle(line);
         }
     }
 
@@ -91,13 +104,13 @@ public class LogFileStat {
      * update the position
      * @param lines
      */
-    private void updatePosition(List<String> lines) {
+    private void updatePosition(List<String> lines, long logPointer) {
         //java.io.LineNumberReader
-        long bufSize = 0l;
-        for(String line: lines) {
-            bufSize += line.length() + IOUtils.LINE_SEPARATOR.length();
+        long lastLine = 0l;
+        if(lines.size() > 0) {
+            lastLine = lines.get(lines.size() - 1).length();
         }
-        this.position += bufSize;
+        this.position = logPointer - lastLine;
     }
 
     /**

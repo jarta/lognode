@@ -1,11 +1,13 @@
 package com.jarta.file;
 
-import org.apache.commons.io.monitor.FileAlterationListenerAdaptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -14,15 +16,15 @@ import java.util.Map;
 /**
  * Created by wei on 2015/4/4.
  */
-public class EventFileListener implements Runnable{
+public class FileEventMonitor implements Runnable{
 
-    private static Logger logger = LoggerFactory.getLogger(EventFileListener.class);
+    private static Logger logger = LoggerFactory.getLogger(FileEventMonitor.class);
 
     private final int TIMEOUT = 5*1000;
 
-    private static Map<String, EventFileListener> watchRegistry = new HashMap<String, EventFileListener>();
+    private static Map<String, FileEventMonitor> watchRegistry = new HashMap<String, FileEventMonitor>();
 
-    private Map<String,LogFileStat> fileRegistry = new HashMap<String, LogFileStat>();
+    private Map<String,FileContentWatcher> fileRegistry = new HashMap<String, FileContentWatcher>();
 
     private Map<String,Long> fileInitSize = new HashMap<String, Long>();
 
@@ -32,7 +34,7 @@ public class EventFileListener implements Runnable{
 
     private boolean runFlag = true;
 
-    private EventFileListener(String filePath) throws Exception {
+    private FileEventMonitor(String filePath) throws Exception {
         this.filePath = filePath;
         //record the init file size
         File fDir = new File(filePath);
@@ -43,8 +45,36 @@ public class EventFileListener implements Runnable{
 
         File[] files = fDir.listFiles();
         for(int i=0;i<files.length;i++){
-            fileInitSize.put(files[i].getName(), files[i].length());
+            fileInitSize.put(files[i].getName(), getFileSize(files[i].getPath()));
         }
+    }
+
+    /**
+     * To retrieve the old file size
+     * @param filePath
+     * @return
+     */
+    protected long getFileSize(String filePath) {
+        long fSize = 0l;
+        RandomAccessFile ra = null;
+        try {
+            ra = new RandomAccessFile(filePath, "r");
+            FileChannel fc = ra.getChannel();
+            fSize = fc.size();
+        } catch (Exception e) {
+            logger.error("fail to retrieve the file size", e);
+        } finally {
+            if(ra != null) {
+                try {
+                    ra.close();
+                } catch (IOException e) {
+                   logger.warn("fail to close ra");
+                }
+            }
+        }
+
+        logger.info("Init file {} with size {}", filePath, fSize);
+        return fSize;
     }
 
     /**
@@ -75,7 +105,6 @@ public class EventFileListener implements Runnable{
             while(true) {
 
                 final WatchKey wKey = watcher.take();
-
                 for(WatchEvent<?> watchEvent: wKey.pollEvents()) {
 
                     final WatchEvent<Path> watchEventPath = (WatchEvent<Path>) watchEvent;
@@ -83,7 +112,7 @@ public class EventFileListener implements Runnable{
                     File file = new File(this.filePath + File.separator + filename.toFile().getName());
 
                     logger.info("event coming for " + file.getPath() + " , event:" + watchEvent.kind().name());
-                    LogFileStat curStat = getLogFileStat(file);
+                    FileContentWatcher curStat = getLogFileStat(file);
 
                     if(StandardWatchEventKinds.ENTRY_CREATE == watchEvent.kind()) {
                         curStat.create();
@@ -97,6 +126,8 @@ public class EventFileListener implements Runnable{
                         curStat.remove();
                     }
                 }
+                // KEY needs to be reset after processing, otherwise the next event will not be received.
+                wKey.reset();
             }
 
         } catch (Exception e) {
@@ -113,14 +144,14 @@ public class EventFileListener implements Runnable{
      * @param file
      * @return
      */
-    private LogFileStat getLogFileStat(File file) {
-        LogFileStat curStat = null;
+    private FileContentWatcher getLogFileStat(File file) {
+        FileContentWatcher curStat = null;
         String chgFile =file.getName();
         synchronized (fileRegistry) {
             if(!fileRegistry.containsKey(chgFile)) {
                 //TODO: the default position should be read when process up
 
-                fileRegistry.put(chgFile, new LogFileStat(file, toLastLine(file)));
+                fileRegistry.put(chgFile, new FileContentWatcher(file, toLastLine(file)));
             }
         }
         curStat = fileRegistry.get(chgFile);
@@ -160,9 +191,10 @@ public class EventFileListener implements Runnable{
         if(target.exists() && target.isDirectory()) {
             synchronized (watchRegistry) {
                 if(!watchRegistry.containsKey(filePath)) {
-                    final EventFileListener fileWatcher = new EventFileListener(filePath);
+                    final FileEventMonitor fileWatcher = new FileEventMonitor(filePath);
                     watchRegistry.put(filePath, fileWatcher);
-                    new Thread(fileWatcher).start();
+                    fileWatcher.startWatch();
+//                    new Thread(fileWatcher).start();
                 }
             }
         }
@@ -173,9 +205,9 @@ public class EventFileListener implements Runnable{
         startWatch();
         while(runFlag) {
             synchronized (fileRegistry) {
-                Iterator<LogFileStat> fileIter = fileRegistry.values().iterator();
+                Iterator<FileContentWatcher> fileIter = fileRegistry.values().iterator();
                 while(fileIter.hasNext()) {
-                    LogFileStat f = fileIter.next();
+                    FileContentWatcher f = fileIter.next();
                     if(f.isNeedFlash() && f.isOverTime(TIMEOUT)) {
                         f.modify(true);
                     }
@@ -190,7 +222,7 @@ public class EventFileListener implements Runnable{
     }
 
     public static void main(String[] args) throws Exception {
-        EventFileListener.addWatch("D:\\works");
-        Thread.currentThread().join();
+        FileEventMonitor.addWatch("D:\\works");
+        //Thread.currentThread().join();
     }
 }
